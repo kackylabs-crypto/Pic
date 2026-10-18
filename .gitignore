@@ -2,3 +2,7 @@
 zig-out/
 zig-pkg/
 *.o
+
+# Pic scratch files
+.pic-tmp.txt
+.pic-say.txt
