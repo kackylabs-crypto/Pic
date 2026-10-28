@@ -13,6 +13,7 @@ const MODEL = "mistralai/ministral-3-3b"; // the one and only model
 const BROWSER_UA = "Mozilla/5.0 (compatible; Pic/1.0)";
 const TMP_FILE = ".pic-tmp.txt"; // scratch files, created in the current directory
 const SAY_FILE = ".pic-say.txt";
+const MIC_FILE = ".pic-voice.wav";
 const MAX_HISTORY = 6; // chat turns remembered in memory
 
 const PERSONA =
@@ -122,7 +123,7 @@ const Http = struct { status: u16, body: []const u8 };
 const RESPONSE_FORMAT =
 \\"response_format":{"type":"json_schema","json_schema":{"name":"action","strict":true,"schema":{"type":"object",
 \\"properties":{"tool":{"type":"string","enum":["chat","say","open_url","open_app","get_time","search_web","search_youtube","search_wikipedia","search_github","search_amazon","search_wallpapers","play_music","fetch_url","get_stock_price","do_nothing"]},"target":{"type":"string"}},
-\\"required":["tool","target"]}}},
+\\"required":["tool","target"]}}}
 ;
 
 fn trim(s: []const u8) []const u8 {
@@ -200,7 +201,7 @@ fn normalizeUrl(a: std.mem.Allocator, target: []const u8) ?[]const u8 {
     for (first) |c| if (std.mem.indexOfScalar(u8, "\"'<>^|`\\\x7f", c) != null) return null;
     const has_scheme = std.mem.startsWith(u8, first, "http://") or std.mem.startsWith(u8, first, "https://");
     if (!has_scheme and std.mem.indexOf(u8, first, "://") != null) return null;
-        const url = if (has_scheme) first else (std.fmt.allocPrint(a, "https://{s}", .{first}) catch return null);
+    const url = if (has_scheme) first else (std.fmt.allocPrint(a, "https://{s}", .{first}) catch return null);
     const scheme_end = (std.mem.indexOf(u8, url, "://") orelse return null) + 3;
     const after = url[scheme_end..];
     const host = after[0 .. std.mem.indexOfAny(u8, after, "/?#") orelse after.len];
@@ -390,11 +391,32 @@ fn speak(io: std.Io, text: []const u8) void {
     }
     switch (builtin.os.tag) {
         .macos => _ = spawnOk(io, &.{ "say", "-f", SAY_FILE }),
-        .windows => _ = spawnOk(io, &.{ "powershell", "-NoProfile", "-Command", "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak((Get-Content -Raw " ++ SAY_FILE ++ "))" }),
+        .windows => _ = spawnOk(io, &.{ "powershell", "-NoProfile", "-Command", "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak((Get-Content -Raw -Path '" ++ SAY_FILE ++ "'))" }),
         else => {
             if (!spawnOk(io, &.{ "espeak-ng", "-f", SAY_FILE })) _ = spawnOk(io, &.{ "espeak", "-f", SAY_FILE });
         },
     }
+}
+
+fn recordMic(io: std.Io, stdout: *std.Io.Writer, seconds: u32) !void {
+    var dur_buf: [16]u8 = undefined;
+    const duration = std.fmt.bufPrint(&dur_buf, "{d}", .{seconds}) catch "5";
+    const argv: []const []const u8 = switch (builtin.os.tag) {
+        .linux => &.{ "ffmpeg", "-y", "-f", "alsa", "-i", "default", "-t", duration, "-ac", "1", "-ar", "16000", MIC_FILE },
+        .macos => &.{ "ffmpeg", "-y", "-f", "avfoundation", "-i", ":0", "-t", duration, "-ac", "1", "-ar", "16000", MIC_FILE },
+        .windows => &.{ "ffmpeg", "-y", "-f", "dshow", "-i", "audio=Microphone", "-t", duration, "-ac", "1", "-ar", "16000", MIC_FILE },
+        else => return error.NotSupported,
+    };
+    try note(stdout, .info, "Listening for {d} seconds from the microphone...", .{seconds});
+    var child = std.process.spawn(io, .{ .argv = argv }) catch |err| {
+        try note(stdout, .err, "I couldn't access the microphone. Install FFmpeg and allow mic access.", .{});
+        return err;
+    };
+    _ = child.wait(io) catch |err| {
+        try note(stdout, .err, "The mic recording stopped before it finished.", .{});
+        return err;
+    };
+    try note(stdout, .ok, "Saved a voice clip to ./{s}.", .{MIC_FILE});
 }
 
 fn stripFences(raw: []const u8) []const u8 {
@@ -511,7 +533,7 @@ fn remember(gpa: std.mem.Allocator, st: *State, user: []const u8, reply: []const
     }
     try st.history.append(gpa, .{
         .user = try gpa.dupe(u8, user),
-                          .assistant = try gpa.dupe(u8, reply[0..@min(reply.len, 600)]),
+        .assistant = try gpa.dupe(u8, reply[0..@min(reply.len, 600)]),
     });
 }
 
@@ -576,6 +598,9 @@ fn command(io: std.Io, gpa: std.mem.Allocator, a: std.mem.Allocator, stdout: *st
     } else if (eql(word, "/mute") or eql(word, "/unmute")) {
         st.speech = eql(word, "/unmute");
         try note(stdout, .info, "Spoken replies {s}.", .{if (st.speech) "on" else "off"});
+    } else if (eql(word, "/voice") or eql(word, "/mic")) {
+        const secs: u32 = if (rest.len == 0) 5 else std.fmt.parseInt(u32, rest, 10) catch 5;
+        try recordMic(io, stdout, secs);
     } else if (eql(word, "/color")) {
         tui.color = !tui.color;
         try note(stdout, .info, "Colours {s}.", .{if (tui.color) "on" else "off"});
@@ -634,4 +659,3 @@ pub fn main(init: std.process.Init) !void {
     }
     try tui.status(stdout, .info, "Goodbye.");
 }
-
