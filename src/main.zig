@@ -416,7 +416,7 @@ fn recordMic(io: std.Io, stdout: *std.Io.Writer, seconds: u32) !void {
         try note(stdout, .err, "The mic recording stopped before it finished.", .{});
         return err;
     };
-    try note(stdout, .ok, "Saved a voice clip to ./{s}.", .{MIC_FILE});
+    try note(stdout, .ok, "Saved a voice clip to ./{s}. Type or paste what you said, or run /voice again. Keyboard input is still enabled.", .{MIC_FILE});
 }
 
 fn stripFences(raw: []const u8) []const u8 {
